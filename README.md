@@ -53,6 +53,26 @@ As shown in the plot, the filter estimates velocity as part of the state rather 
 
 > **Note:** The Kalman predict step feeds it the commanded acceleration. I started with a=0, but it blew up in every configuration. P-only got pumped past 130 m, PD had a huge positive bias. This was because, with a=0, the drone can't be seen accelerating, so the estimate lags the truth, creating a phase lag, and destabilizing the feedback loop.
 
+---
+
+## Disturbance estimation (state augmentation)
+
+![Disturbance observer: altitude droop and recovery, the estimate b-hat converging to the true disturbance, and a lagging time-varying estimate](results/disturbance_observer.png)
+
+I then tested whether the filter could handle a force it was never told about, like an unmodelled payload or a steady downdraft. I added an unknown constant disturbance acceleration (`b_true = -2 m/s²`) to the true plant and augmented the Kalman state to `x = [z, v, b]`, so the filter has to estimate the disturbance from noisy position measurements alone.
+
+First I checked that this is even possible: the script computes the observability matrix of the augmented system and finds it full rank (`det = dt³ ≠ 0`), so `b` is recoverable from position alone. And it is — `b̂` converges to −2 m/s² within about a second.
+
+| case | steady-state altitude |
+|---|---|
+| no disturbance (reference droop) | 8.30 m |
+| disturbance, no feedforward | 7.96 m |
+| disturbance, feedforward (−m·b̂) | 8.30 m |
+
+The interesting part is what the feedforward does. Uncorrected, the disturbance droops the drone further, to 7.96 m. Feeding the estimate forward as a `−m·b̂` thrust term recovers the altitude, but only back to 8.30 m — the disturbance-free droop, not the 10 m setpoint. So disturbance feedforward cancels the disturbance, not the gravity droop: it removes the unknown force and restores the nominal PD response, which still droops because proportional control needs error to hold thrust. Reaching the setpoint would still need integral action. Feedforward is not integral action.
+
+> **Note:** The augmentation assumes `b` is constant. Against a time-varying disturbance (a 0.1 Hz sine, bottom-right panel) the estimate visibly lags the truth. The disturbance process-noise `qb` sets this trade-off: a larger `qb` tracks change faster but makes the estimate noisier.
+
 ## Reproduce
 
 ```bash
@@ -61,6 +81,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 python sim.py                     # Foundation figure: PID + Kalman (results/kalman_comparison.png)
+python disturbance_observer.py    # Disturbance estimation (results/disturbance_observer.png)
 python train_ppo.py               # Trains PPO, saves ppo_altitude.zip (~4 min, CPU)
 python evaluate.py                # Benchmark table + generalization test (results/comparison.png)
 ```
@@ -68,6 +89,7 @@ python evaluate.py                # Benchmark table + generalization test (resul
 ## Files
 
 * `sim.py` — the standalone PID + Kalman simulation (writes `results/kalman_comparison.png`)
+* `disturbance_observer.py` — state-augmented disturbance estimation (writes `results/disturbance_observer.png`)
 * `envs/altitude_env.py` — the plant as a Gymnasium environment
 * `controllers/pid.py` — the PID as a policy object
 * `train_ppo.py` — trains the PPO policy
